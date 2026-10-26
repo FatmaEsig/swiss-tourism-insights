@@ -23,7 +23,7 @@ python -m venv .venv
 
 ## Mac / Linux :
 ```bash
-source .venv/bin/activate <br>
+source .venv/bin/activate
 ```
 
 ### 3. Installer les dépendances

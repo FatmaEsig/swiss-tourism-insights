@@ -34,7 +34,13 @@ python -m pip install -r requirements.txt
 (ou simplement : pip install -r requirements.txt)
 ```
 
-### 4. Lancer l'application
+### 4. Préparer les données OFS
+```bash
+python src/data_preparation.py
+```
+Le fichier nettoyé est créé dans `data/processed/master_data.csv`.
+
+### 5. Lancer l'application
 ```bash
 streamlit run app.py  
 ```

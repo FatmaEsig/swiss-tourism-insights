@@ -446,10 +446,145 @@ def render_typologie(data: pd.DataFrame) -> None:
     st.plotly_chart(comparison_figure, use_container_width=True)
 
 
-def render_placeholder(chapter: str) -> None:
-    """Affiche un emplacement explicite pour les chapitres non implémentés."""
-    st.title(chapter)
-    st.info("Ce chapitre sera disponible dans une prochaine étape.")
+def render_simulation(data: pd.DataFrame) -> None:
+    """Simule une hausse de fréquentation pendant les quatre mois les plus creux."""
+    st.title("Chapitre 4 : Outil de simulation (Hors-saison)")
+    st.markdown(
+        "Simulez l'impact d'une politique de promotion touristique ciblée sur les "
+        "mois dits 'creux' (basse saison) pour lisser la fréquentation annuelle."
+    )
+
+    if data.empty:
+        st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
+        return
+
+    monthly_data = data[
+        data["Mois_No"].between(1, 12)
+        & data["Nuitees"].notna()
+        & data["Region_Nom"].notna()
+    ].copy()
+    regions = sorted(monthly_data["Region_Nom"].unique().tolist())
+    if monthly_data.empty or not regions:
+        st.info("Aucune donnée mensuelle disponible pour lancer la simulation.")
+        return
+
+    region = st.selectbox(
+        "Région à analyser",
+        options=regions,
+        index=0,
+        key="simulation_region",
+    )
+    region_data = monthly_data[monthly_data["Region_Nom"] == region].copy()
+
+    month_names = [
+        "Janvier",
+        "Février",
+        "Mars",
+        "Avril",
+        "Mai",
+        "Juin",
+        "Juillet",
+        "Août",
+        "Septembre",
+        "Octobre",
+        "Novembre",
+        "Décembre",
+    ]
+    month_labels = (
+        region_data[["Mois_No", "Mois_Nom"]]
+        .dropna()
+        .drop_duplicates("Mois_No")
+        .set_index("Mois_No")["Mois_Nom"]
+        .to_dict()
+    )
+    historical_by_year = (
+        region_data.groupby(["Annee", "Mois_No"], as_index=False)["Nuitees"]
+        .sum()
+    )
+    monthly_history = (
+        historical_by_year.groupby("Mois_No", as_index=False)["Nuitees"]
+        .mean()
+        .rename(columns={"Nuitees": "Nuitees_Historiques"})
+    )
+    simulation = pd.DataFrame({"Mois_No": range(1, 13)})
+    simulation["Mois_Nom"] = simulation["Mois_No"].map(
+        lambda month_number: month_labels.get(month_number, month_names[month_number - 1])
+    )
+    simulation = simulation.merge(monthly_history, on="Mois_No", how="left")
+    simulation["Nuitees_Historiques"] = simulation["Nuitees_Historiques"].fillna(0)
+
+    low_season_months = (
+        simulation.nsmallest(4, "Nuitees_Historiques")["Mois_No"].tolist()
+    )
+    low_season_names = simulation.loc[
+        simulation["Mois_No"].isin(low_season_months), "Mois_Nom"
+    ].tolist()
+    st.info(
+        f"Mois de basse saison identifiés pour {region} : "
+        f"{', '.join(low_season_names)}"
+    )
+
+    increase = st.slider(
+        "Hypothèse : Augmentation des nuitées en basse saison (%)",
+        min_value=0,
+        max_value=100,
+        value=20,
+        step=5,
+        key="simulation_increase",
+    )
+    simulation["Nuitees_Simulees"] = simulation["Nuitees_Historiques"]
+    low_season_mask = simulation["Mois_No"].isin(low_season_months)
+    simulation.loc[low_season_mask, "Nuitees_Simulees"] *= 1 + increase / 100
+
+    annual_history = simulation["Nuitees_Historiques"].sum()
+    annual_simulation = simulation["Nuitees_Simulees"].sum()
+    estimated_gain = annual_simulation - annual_history
+    kpi_columns = st.columns(3)
+    kpi_columns[0].metric(
+        "Total annuel Historique",
+        f"{annual_history:,.0f}".replace(",", " "),
+    )
+    kpi_columns[1].metric(
+        "Total annuel Simulé",
+        f"{annual_simulation:,.0f}".replace(",", " "),
+    )
+    kpi_columns[2].metric(
+        "Gain total estimé",
+        f"{estimated_gain:,.0f}".replace(",", " "),
+        delta=f"+{estimated_gain:,.0f}".replace(",", " "),
+    )
+
+    chart_data = simulation.melt(
+        id_vars=["Mois_No", "Mois_Nom"],
+        value_vars=["Nuitees_Historiques", "Nuitees_Simulees"],
+        var_name="Scenario",
+        value_name="Nuitees",
+    )
+    chart_data["Scenario"] = chart_data["Scenario"].replace(
+        {
+            "Nuitees_Historiques": "Historique",
+            "Nuitees_Simulees": "Simulation",
+        }
+    )
+    simulation_figure = px.bar(
+        chart_data,
+        x="Mois_Nom",
+        y="Nuitees",
+        color="Scenario",
+        barmode="group",
+        category_orders={
+            "Mois_Nom": simulation["Mois_Nom"].tolist(),
+            "Scenario": ["Historique", "Simulation"],
+        },
+        color_discrete_map={"Historique": "#7D8A99", "Simulation": "#E67E22"},
+        labels={"Mois_Nom": "Mois", "Nuitees": "Nuitées", "Scenario": ""},
+    )
+    simulation_figure.update_layout(
+        xaxis={"categoryorder": "array", "categoryarray": simulation["Mois_Nom"].tolist()},
+        yaxis={"tickformat": ",.0f", "title": "Nuitées moyennes"},
+        legend_title_text="",
+    )
+    st.plotly_chart(simulation_figure, use_container_width=True)
 
 
 def main() -> None:
@@ -469,8 +604,8 @@ def main() -> None:
         render_profils(filtered_data)
     elif chapter == "Chapitre 3 : Typologie & Saisonnalité":
         render_typologie(filtered_data)
-    else:
-        render_placeholder(chapter)
+    elif chapter == "Chapitre 4 : Outil de simulation":
+        render_simulation(filtered_data)
 
 
 if __name__ == "__main__":

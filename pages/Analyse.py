@@ -3,7 +3,7 @@
 import plotly.express as px
 import streamlit as st
 
-from app import analysis_rows, filter_context, load_data, render_source_note
+from src.dashboard_utils import analysis_rows, filter_context, load_data, render_source_note
 
 
 data = load_data()

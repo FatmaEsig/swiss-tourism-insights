@@ -3,7 +3,12 @@
 import pandas as pd
 import streamlit as st
 
-from app import MONTH_NAMES, filter_context, load_data, render_source_note
+from src.dashboard_utils import (
+    MONTH_NAMES,
+    filter_context,
+    load_data,
+    render_source_note,
+)
 
 
 data = load_data()

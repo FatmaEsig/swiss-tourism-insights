@@ -7,41 +7,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.dashboard_utils import (
+    MONTH_NAMES,
+    analysis_rows,
+    annual_rows,
+    filter_context,
+    format_number,
+    load_data,
+    render_source_note,
+)
 
 st.set_page_config(
     page_title="Tourisme Suisse",
     page_icon="🇨🇭",
     layout="wide",
 )
-
-DATA_PATH = Path(__file__).parent / "data" / "processed" / "master_data.csv"
-REQUIRED_COLUMNS = {
-    "Annee",
-    "Mois_No",
-    "Mois_Nom",
-    "Region_Nom",
-    "Arrivees",
-    "Nuitees",
-    "Suisse_Nuitées",
-    "Taux_occupation_chambres_pct",
-    "Latitude",
-    "Longitude",
-}
-
-MONTH_NAMES = [
-    "Janvier",
-    "Février",
-    "Mars",
-    "Avril",
-    "Mai",
-    "Juin",
-    "Juillet",
-    "Août",
-    "Septembre",
-    "Octobre",
-    "Novembre",
-    "Décembre",
-]
 
 # Coordonnées indicatives des centres des régions touristiques OFS.
 # Elles servent uniquement au repérage spatial, pas à représenter une frontière.
@@ -65,38 +45,6 @@ REGION_COORDINATES = {
     "Région Argovie et Soleure": (47.40, 8.05),
     "R�gion Argovie et Soleure": (47.40, 8.05),
 }
-
-
-@st.cache_data
-def load_data() -> pd.DataFrame:
-    """Charge le fichier maître et normalise les colonnes numériques."""
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"Le fichier de données est introuvable : {DATA_PATH}. "
-            "Exécutez d'abord src/data_preparation.py."
-        )
-
-    data = pd.read_csv(DATA_PATH)
-    missing_columns = REQUIRED_COLUMNS.difference(data.columns)
-    if missing_columns:
-        missing = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Colonnes obligatoires absentes du fichier maître : {missing}")
-
-    for column in (
-        "Annee",
-        "Mois_No",
-        "Arrivees",
-        "Nuitees",
-        "Suisse_Nuitées",
-        "Taux_occupation_chambres_pct",
-        "Latitude",
-        "Longitude",
-    ):
-        data[column] = pd.to_numeric(data[column], errors="coerce")
-
-    data["Region_Nom"] = data["Region_Nom"].astype("string").str.strip()
-    data["Mois_Nom"] = data["Mois_Nom"].astype("string").str.strip()
-    return data.dropna(subset=["Annee", "Mois_No", "Region_Nom"]).copy()
 
 
 def render_sidebar(data: pd.DataFrame) -> tuple[str, tuple[int, int], list[str]]:
@@ -718,7 +666,11 @@ def render_simulation(data: pd.DataFrame) -> None:
         & data["Nuitees"].notna()
         & data["Region_Nom"].notna()
     ].copy()
-    regions = sorted(monthly_data["Region_Nom"].unique().tolist())
+    regions = sorted(
+        region
+        for region in monthly_data["Region_Nom"].unique().tolist()
+        if region != "Suisse"
+    )
     if monthly_data.empty or not regions:
         st.info("Aucune donnée mensuelle disponible pour lancer la simulation.")
         return
@@ -731,20 +683,6 @@ def render_simulation(data: pd.DataFrame) -> None:
     )
     region_data = monthly_data[monthly_data["Region_Nom"] == region].copy()
 
-    month_names = [
-        "Janvier",
-        "Février",
-        "Mars",
-        "Avril",
-        "Mai",
-        "Juin",
-        "Juillet",
-        "Août",
-        "Septembre",
-        "Octobre",
-        "Novembre",
-        "Décembre",
-    ]
     month_labels = (
         region_data[["Mois_No", "Mois_Nom"]]
         .dropna()
@@ -763,7 +701,9 @@ def render_simulation(data: pd.DataFrame) -> None:
     )
     simulation = pd.DataFrame({"Mois_No": range(1, 13)})
     simulation["Mois_Nom"] = simulation["Mois_No"].map(
-        lambda month_number: month_labels.get(month_number, month_names[month_number - 1])
+        lambda month_number: month_labels.get(
+            month_number, MONTH_NAMES[month_number - 1]
+        )
     )
     simulation = simulation.merge(monthly_history, on="Mois_No", how="left")
     simulation["Nuitees_Historiques"] = simulation["Nuitees_Historiques"].fillna(0)
@@ -777,6 +717,11 @@ def render_simulation(data: pd.DataFrame) -> None:
     st.info(
         f"Mois de basse saison identifiés pour {region} : "
         f"{', '.join(low_season_names)}"
+    )
+    st.caption(
+        "Base de calcul : moyenne des nuitées mensuelles observées pour cette "
+        "région sur chaque année de la période sélectionnée. Les quatre mois "
+        "les moins fréquentés sont ensuite augmentés selon votre hypothèse."
     )
 
     increase = st.slider(
@@ -794,19 +739,29 @@ def render_simulation(data: pd.DataFrame) -> None:
     annual_history = simulation["Nuitees_Historiques"].sum()
     annual_simulation = simulation["Nuitees_Simulees"].sum()
     estimated_gain = annual_simulation - annual_history
+    gain_rate = estimated_gain / annual_history * 100 if annual_history else 0
     kpi_columns = st.columns(3)
     kpi_columns[0].metric(
-        "Total annuel Historique",
-        f"{annual_history:,.0f}".replace(",", " "),
+        "Nuitées annuelles moyennes — historique",
+        format_number(annual_history),
+        help="Somme des 12 moyennes mensuelles historiques de la région sélectionnée.",
     )
     kpi_columns[1].metric(
-        "Total annuel Simulé",
-        f"{annual_simulation:,.0f}".replace(",", " "),
+        "Nuitées annuelles moyennes — simulation",
+        format_number(annual_simulation),
+        help="Total historique augmenté uniquement pendant les quatre mois creux.",
     )
     kpi_columns[2].metric(
-        "Gain total estimé",
-        f"{estimated_gain:,.0f}".replace(",", " "),
-        delta=f"+{estimated_gain:,.0f}".replace(",", " "),
+        "Gain annuel estimé",
+        format_number(estimated_gain),
+        delta=f"+{format_number(estimated_gain)} ({gain_rate:.1f} %)",
+        help="Nuitées simulées moins nuitées historiques. Ce n'est pas une prévision.",
+    )
+    st.markdown(
+        f"**Interprétation :** avec une hausse de **{increase} %** appliquée aux "
+        f"quatre mois creux, le scénario ajoute environ **{format_number(estimated_gain)} "
+        f"nuitées par an**, soit **{gain_rate:.1f} %** par rapport au total annuel "
+        "moyen historique. Les autres mois restent inchangés."
     )
 
     chart_data = simulation.melt(
@@ -836,10 +791,25 @@ def render_simulation(data: pd.DataFrame) -> None:
     )
     simulation_figure.update_layout(
         xaxis={"categoryorder": "array", "categoryarray": simulation["Mois_Nom"].tolist()},
-        yaxis={"tickformat": ",.0f", "title": "Nuitées moyennes"},
+        yaxis={"tickformat": ",.0f", "title": "Nuitées moyennes par mois"},
         legend_title_text="",
     )
     st.plotly_chart(simulation_figure, use_container_width=True)
+    st.subheader("Détail du scénario par mois")
+    detail = simulation[["Mois_Nom", "Nuitees_Historiques", "Nuitees_Simulees"]].copy()
+    detail["Gain"] = detail["Nuitees_Simulees"] - detail["Nuitees_Historiques"]
+    detail.columns = ["Mois", "Historique (nuits)", "Simulation (nuits)", "Gain (nuits)"]
+    st.dataframe(
+        detail.style.format(
+            {
+                "Historique (nuits)": "{:,.0f}",
+                "Simulation (nuits)": "{:,.0f}",
+                "Gain (nuits)": "{:,.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def main() -> None:

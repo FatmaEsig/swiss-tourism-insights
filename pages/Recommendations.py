@@ -45,8 +45,20 @@ else:
         monthly.groupby(["Region_Nom", "Mois_No"], as_index=False)["Nuitees"]
         .sum()
     )
-    month_average = monthly.groupby("Mois_No", as_index=False)["Nuitees"].mean()
-    quiet_months = month_average.nsmallest(4, "Nuitees")["Mois_No"].tolist()
+    if (monthly["Region_Nom"] != "Suisse").any():
+        monthly = monthly[monthly["Region_Nom"] != "Suisse"].copy()
+    if monthly.empty:
+        st.info("Aucune donnée régionale mensuelle disponible pour formuler des recommandations.")
+        render_source_note()
+        st.stop()
+
+    monthly["Part_annuelle_pct"] = monthly["Nuitees"] / monthly.groupby(
+        "Region_Nom"
+    )["Nuitees"].transform("sum") * 100
+    month_average = monthly.groupby("Mois_No", as_index=False)[
+        "Part_annuelle_pct"
+    ].mean()
+    quiet_months = month_average.nsmallest(4, "Part_annuelle_pct")["Mois_No"].tolist()
     quiet_names = [MONTH_NAMES[month - 1] for month in quiet_months]
 
     st.subheader("Périodes prioritaires")
@@ -57,8 +69,8 @@ else:
     )
 
     region_summary = (
-        monthly.groupby("Region_Nom", as_index=False)["Nuitees"]
-        .agg(Nuitees_moyennes="mean", Variabilite="std")
+        monthly.groupby("Region_Nom", as_index=False)["Part_annuelle_pct"]
+        .agg(Part_mensuelle_moyenne="mean", Variabilite="std")
     )
     region_summary["Variabilite"] = region_summary["Variabilite"].fillna(0)
     most_seasonal = region_summary.sort_values("Variabilite", ascending=False).iloc[0]
@@ -67,7 +79,8 @@ else:
     columns[0].metric(
         "Région la plus saisonnière",
         str(most_seasonal["Region_Nom"]),
-        help="Région présentant la plus forte dispersion de ses volumes mensuels.",
+        help="Région présentant la plus forte dispersion de ses parts mensuelles, "
+        "donc la saisonnalité la plus marquée.",
     )
     columns[1].metric(
         "Mois prioritaires",

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -157,6 +158,13 @@ def annual_rows(data: pd.DataFrame) -> pd.DataFrame:
     return data[data["Mois_No"].between(1, 12)].copy()
 
 
+def analysis_rows(data: pd.DataFrame) -> pd.DataFrame:
+    """Évite de compter l'agrégat Suisse avec ses régions détaillées."""
+    rows = annual_rows(data)
+    regional_rows = rows[rows["Region_Nom"] != "Suisse"].copy()
+    return regional_rows if not regional_rows.empty else rows
+
+
 def format_number(value: float) -> str:
     """Formate un nombre avec des espaces, lisibles en français."""
     return f"{value:,.0f}".replace(",", " ")
@@ -206,8 +214,17 @@ def render_overview(data: pd.DataFrame) -> None:
         return
 
     annual = annual_rows(data)
-    total_nights = annual["Nuitees"].sum()
-    average_occupancy = annual["Taux_occupation_chambres_pct"].mean()
+    national_rows = annual[annual["Region_Nom"] == "Suisse"]
+    total_nights = (
+        national_rows["Nuitees"].sum()
+        if not national_rows.empty
+        else annual["Nuitees"].sum()
+    )
+    average_occupancy = (
+        national_rows["Taux_occupation_chambres_pct"].mean()
+        if not national_rows.empty
+        else annual["Taux_occupation_chambres_pct"].mean()
+    )
     metric_columns = st.columns(2)
     metric_columns[0].metric(
         "Nuitées totales sur la période",
@@ -237,6 +254,8 @@ def render_overview(data: pd.DataFrame) -> None:
             Taux_occupation_chambres_pct=("Taux_occupation_chambres_pct", "mean"),
         )
     )
+    if (map_data["Region_Nom"] != "Suisse").any():
+        map_data = map_data[map_data["Region_Nom"] != "Suisse"].copy()
     map_data[["Latitude", "Longitude"]] = map_data["Region_Nom"].map(
         REGION_COORDINATES
     ).apply(pd.Series)
@@ -355,7 +374,12 @@ def render_profils(data: pd.DataFrame) -> None:
         st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
         return
 
-    profils = annual_rows(data)[
+    st.markdown(
+        "Ce chapitre décrit **d'où viennent les nuitées** et **combien de nuits "
+        "dure en moyenne un séjour**. Les calculs utilisent les lignes annuelles "
+        "OFS pour éviter d'additionner deux fois les mêmes données."
+    )
+    profils = analysis_rows(data)[
         ["Region_Nom", "Nuitees", "Suisse_Nuitées", "Arrivees"]
     ].copy()
     profils["Etranger_Nuitees"] = (
@@ -395,7 +419,12 @@ def render_profils(data: pd.DataFrame) -> None:
                 "Etranger_Nuitees": "Étranger",
             }
         )
-        region_order = sorted(provenance["Region_Nom"].tolist(), reverse=True)
+        provenance["Part_etrangere_pct"] = (
+            provenance["Etranger_Nuitees"] / provenance["Total_Nuitees"] * 100
+        )
+        region_order = provenance.sort_values(
+            "Part_etrangere_pct", ascending=True
+        )["Region_Nom"].tolist()
 
         international_figure = px.bar(
             provenance_long,
@@ -403,11 +432,12 @@ def render_profils(data: pd.DataFrame) -> None:
             y="Region_Nom",
             color="Provenance",
             orientation="h",
+            text="Pourcentage",
             category_orders={
                 "Region_Nom": region_order,
                 "Provenance": ["Suisse", "Étranger"],
             },
-            color_discrete_map={"Suisse": "#163A5F", "Étranger": "#B8C2CC"},
+            color_discrete_map={"Suisse": "#0072B2", "Étranger": "#E69F00"},
             labels={
                 "Pourcentage": "Part des nuitées (%)",
                 "Region_Nom": "Région",
@@ -416,11 +446,39 @@ def render_profils(data: pd.DataFrame) -> None:
         )
         international_figure.update_layout(
             barmode="stack",
+            height=620,
             xaxis={"range": [0, 100], "ticksuffix": "%"},
             legend_title_text="",
         )
-        st.subheader("Dépendance au tourisme international")
+        international_figure.update_traces(
+            texttemplate="%{text:.0f} %",
+            textposition="inside",
+            insidetextanchor="middle",
+        )
+        st.subheader("Part des nuitées domestiques et internationales")
+        st.markdown(
+            "**Lecture :** chaque barre représente 100 % des nuitées de la région. "
+            "« Suisse » correspond aux résidents suisses ; « Étranger » correspond "
+            "à la différence entre les nuitées totales et les nuitées suisses. "
+            "Une part étrangère élevée indique une plus grande dépendance aux marchés "
+            "internationaux, pas nécessairement une meilleure performance."
+        )
         st.plotly_chart(international_figure, use_container_width=True)
+        most_international = provenance.loc[
+            provenance["Part_etrangere_pct"].idxmax()
+        ]
+        most_domestic = provenance.loc[
+            provenance["Part_etrangere_pct"].idxmin()
+        ]
+        st.info(
+            f"**Analyse :** {most_international['Region_Nom']} présente la plus "
+            f"forte part étrangère ({most_international['Part_etrangere_pct']:.1f} %), "
+            f"tandis que {most_domestic['Region_Nom']} présente la plus forte part "
+            f"suisse ({100 - most_domestic['Part_etrangere_pct']:.1f} %). "
+            "Une action réaliste consiste à diversifier les marchés internationaux "
+            "des régions dépendantes et à renforcer les offres nationales pendant "
+            "les périodes creuses."
+        )
 
     duree = (
         profils.groupby("Region_Nom", as_index=False)[["Nuitees", "Arrivees"]]
@@ -439,9 +497,9 @@ def render_profils(data: pd.DataFrame) -> None:
         y="Region_Nom",
         orientation="h",
         text_auto=".1f",
-        color_discrete_sequence=["#2F6B9A"],
+        color_discrete_sequence=["#56B4E9"],
         labels={
-            "Duree_Moyenne": "Nuitées moyennes par arrivée",
+            "Duree_Moyenne": "Durée moyenne (nuits par arrivée)",
             "Region_Nom": "Région",
         },
     )
@@ -449,8 +507,23 @@ def render_profils(data: pd.DataFrame) -> None:
         showlegend=False,
         yaxis={"categoryorder": "array", "categoryarray": duree["Region_Nom"].tolist()},
     )
-    st.subheader("Durée moyenne de séjour")
+    st.subheader("Durée moyenne estimée d'un séjour")
+    st.markdown(
+        "**Calcul :** nuitées totales ÷ arrivées totales. Par exemple, une valeur "
+        "de 2,0 signifie qu'une arrivée correspond en moyenne à deux nuits. "
+        "Il s'agit d'une moyenne agrégée sur la période, pas de la durée de chaque "
+        "séjour individuel."
+    )
     st.plotly_chart(duration_figure, use_container_width=True)
+    longest = duree.iloc[0]
+    shortest = duree.iloc[-1]
+    st.info(
+        f"**Analyse :** la durée moyenne est la plus élevée à {longest['Region_Nom']} "
+        f"({longest['Duree_Moyenne']:.1f} nuits) et la plus faible à "
+        f"{shortest['Region_Nom']} ({shortest['Duree_Moyenne']:.1f} nuits). "
+        "Les séjours courts peuvent être ciblés par des offres de week-end ; "
+        "les séjours longs par des offres de fidélisation ou de séjour prolongé."
+    )
 
 
 def render_typologie(data: pd.DataFrame) -> None:
@@ -472,7 +545,14 @@ def render_typologie(data: pd.DataFrame) -> None:
     if monthly_data.empty:
         st.info("Aucune donnée mensuelle disponible pour analyser la saisonnalité.")
         return
+    if (monthly_data["Region_Nom"] != "Suisse").any():
+        monthly_data = monthly_data[monthly_data["Region_Nom"] != "Suisse"].copy()
 
+    st.markdown(
+        "Cette vue compare la **répartition des nuitées dans l'année**, et non "
+        "leur volume absolu. Ainsi, une petite région et une grande région sont "
+        "comparées sur la même base : la somme des 12 cases d'une région vaut 100 %."
+    )
     month_labels = (
         monthly_data[["Mois_No", "Mois_Nom"]]
         .dropna()
@@ -500,27 +580,62 @@ def render_typologie(data: pd.DataFrame) -> None:
         seasonal["Nuitees"] / seasonal["Total_annuel_region"] * 100
     )
 
-    st.subheader("Répartition mensuelle des nuitées par région")
-    heatmap_figure = px.density_heatmap(
-        seasonal,
-        x="Mois_Nom",
-        y="Region_Nom",
-        z="Part_nuitees_pct",
-        histfunc="sum",
-        text_auto=".1f",
-        category_orders={"Mois_Nom": month_order},
-        color_continuous_scale="Blues",
-        labels={
-            "Mois_Nom": "Mois",
-            "Region_Nom": "Région",
-            "Part_nuitees_pct": "Part des nuitées annuelles (%)",
-        },
+    heatmap_values = (
+        seasonal.pivot(index="Region_Nom", columns="Mois_Nom", values="Part_nuitees_pct")
+        .reindex(columns=month_order)
+        .fillna(0)
+    )
+    heatmap_figure = go.Figure(
+        go.Heatmap(
+            z=heatmap_values.to_numpy(),
+            x=month_order,
+            y=heatmap_values.index.tolist(),
+            text=[[f"{value:.1f} %" for value in row] for row in heatmap_values.to_numpy()],
+            texttemplate="%{text}",
+            colorscale="Blues",
+            colorbar={"title": "Part annuelle (%)"},
+            hovertemplate=(
+                "Région : %{y}<br>Mois : %{x}<br>"
+                "Part des nuitées annuelles : %{z:.1f} %<extra></extra>"
+            ),
+        )
     )
     heatmap_figure.update_layout(
-        coloraxis_colorbar_title="Part (%)",
+        xaxis_title="Mois",
+        yaxis_title="Région",
+        height=650,
+    )
+    heatmap_figure.update_layout(
         xaxis={"categoryorder": "array", "categoryarray": month_order},
     )
+    st.subheader("Répartition mensuelle des nuitées par région")
+    st.markdown(
+        "**Lecture :** une case foncée signifie que le mois représente une part "
+        "importante de l'année de cette région. La valeur affichée est un "
+        "pourcentage, pas un nombre de nuitées. Cette normalisation met en évidence "
+        "la saisonnalité, indépendamment de la taille de la région."
+    )
     st.plotly_chart(heatmap_figure, use_container_width=True)
+
+    concentration = (
+        seasonal.groupby("Region_Nom", as_index=False)["Part_nuitees_pct"]
+        .agg(
+            Part_max="max",
+            Part_min="min",
+            Variabilite="std",
+        )
+        .sort_values("Variabilite", ascending=False)
+    )
+    most_seasonal = concentration.iloc[0]
+    most_stable = concentration.iloc[-1]
+    st.info(
+        f"**Analyse :** {most_seasonal['Region_Nom']} est la région la plus "
+        f"contrastée selon la dispersion mensuelle ({most_seasonal['Variabilite']:.1f} "
+        f"points de pourcentage), tandis que {most_stable['Region_Nom']} est la "
+        f"plus régulière ({most_stable['Variabilite']:.1f} points). "
+        "Pour une région très saisonnière, une promotion ciblée sur les mois "
+        "faibles est plus pertinente qu'une campagne uniforme toute l'année."
+    )
 
     regions = sorted(monthly_data["Region_Nom"].dropna().unique().tolist())
     if not regions:
@@ -557,21 +672,25 @@ def render_typologie(data: pd.DataFrame) -> None:
         .sum()
     )
     comparison = comparison.sort_values(["Mois_No", "Region_Nom"])
+    comparison["Mois_Nom"] = comparison["Mois_No"].map(
+        dict(zip(month_labels["Mois_No"], month_labels["Mois_Nom"]))
+    )
     comparison_figure = px.line(
         comparison,
-        x="Mois_No",
+        x="Mois_Nom",
         y="Nuitees",
         color="Region_Nom",
         markers=True,
-        category_orders={"Mois_No": list(range(1, 13))},
+        category_orders={"Mois_Nom": month_order},
+        color_discrete_sequence=["#0072B2", "#E69F00"],
         labels={
-            "Mois_No": "Mois",
-            "Nuitees": "Nuitées",
+            "Mois_Nom": "Mois",
+            "Nuitees": "Nuitées cumulées sur la période",
             "Region_Nom": "Région",
         },
     )
     comparison_figure.update_layout(
-        xaxis={"dtick": 1, "range": [1, 12]},
+        xaxis={"categoryorder": "array", "categoryarray": month_order},
         yaxis={"tickformat": ",.0f"},
         hovermode="x unified",
         legend_title_text="",

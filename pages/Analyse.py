@@ -3,7 +3,7 @@
 import plotly.express as px
 import streamlit as st
 
-from app import annual_rows, filter_context, load_data, render_source_note
+from app import analysis_rows, filter_context, load_data, render_source_note
 
 
 data = load_data()
@@ -40,7 +40,7 @@ st.markdown(
 if filtered.empty:
     st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
 else:
-    annual = annual_rows(filtered)
+    annual = analysis_rows(filtered)
     total_nights = annual["Nuitees"].sum()
     total_arrivals = annual["Arrivees"].sum()
     duration = total_nights / total_arrivals if total_arrivals else 0

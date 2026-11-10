@@ -323,6 +323,129 @@ def render_profils(data: pd.DataFrame) -> None:
     st.plotly_chart(duration_figure, use_container_width=True)
 
 
+def render_typologie(data: pd.DataFrame) -> None:
+    """Analyse la répartition mensuelle des nuitées par région."""
+    st.title("Chapitre 3 : Typologie et analyse de la saisonnalité")
+
+    if data.empty:
+        st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
+        return
+
+    monthly_data = data[
+        data["Mois_No"].between(1, 12)
+        & data["Nuitees"].notna()
+        & data["Region_Nom"].notna()
+    ].copy()
+    if monthly_data.empty:
+        st.info("Aucune donnée mensuelle disponible pour analyser la saisonnalité.")
+        return
+
+    month_labels = (
+        monthly_data[["Mois_No", "Mois_Nom"]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values("Mois_No")
+    )
+    month_order = month_labels["Mois_Nom"].tolist()
+    monthly_data["Mois_Nom"] = pd.Categorical(
+        monthly_data["Mois_Nom"],
+        categories=month_order,
+        ordered=True,
+    )
+
+    seasonal = (
+        monthly_data.groupby(["Region_Nom", "Mois_Nom"], observed=False, as_index=False)[
+            "Nuitees"
+        ]
+        .sum()
+    )
+    seasonal["Total_annuel_region"] = seasonal.groupby("Region_Nom")[
+        "Nuitees"
+    ].transform("sum")
+    seasonal = seasonal[seasonal["Total_annuel_region"] > 0].copy()
+    seasonal["Part_nuitees_pct"] = (
+        seasonal["Nuitees"] / seasonal["Total_annuel_region"] * 100
+    )
+
+    st.subheader("Répartition mensuelle des nuitées par région")
+    heatmap_figure = px.density_heatmap(
+        seasonal,
+        x="Mois_Nom",
+        y="Region_Nom",
+        z="Part_nuitees_pct",
+        histfunc="sum",
+        text_auto=".1f",
+        category_orders={"Mois_Nom": month_order},
+        color_continuous_scale="Blues",
+        labels={
+            "Mois_Nom": "Mois",
+            "Region_Nom": "Région",
+            "Part_nuitees_pct": "Part des nuitées annuelles (%)",
+        },
+    )
+    heatmap_figure.update_layout(
+        coloraxis_colorbar_title="Part (%)",
+        xaxis={"categoryorder": "array", "categoryarray": month_order},
+    )
+    st.plotly_chart(heatmap_figure, use_container_width=True)
+
+    regions = sorted(monthly_data["Region_Nom"].dropna().unique().tolist())
+    if not regions:
+        st.info("Aucune région disponible pour la comparaison saisonnière.")
+        return
+
+    def default_region(candidates: list[str]) -> int:
+        """Retourne l'index du premier candidat disponible."""
+        for candidate in candidates:
+            if candidate in regions:
+                return regions.index(candidate)
+        return 0
+
+    st.subheader("Comparaison de la concentration saisonnière")
+    selector_columns = st.columns(2)
+    with selector_columns[0]:
+        region_1 = st.selectbox(
+            "Région 1 (ex: Alpine)",
+            options=regions,
+            index=default_region(["Grisons", "Valais"]),
+            key="typologie_region_1",
+        )
+    with selector_columns[1]:
+        region_2 = st.selectbox(
+            "Région 2 (ex: Urbaine)",
+            options=regions,
+            index=default_region(["Région zurichoise", "R�gion zurichoise", "Genève", "Gen�ve"]),
+            key="typologie_region_2",
+        )
+
+    comparison = (
+        monthly_data[monthly_data["Region_Nom"].isin([region_1, region_2])]
+        .groupby(["Mois_No", "Region_Nom"], as_index=False)["Nuitees"]
+        .sum()
+    )
+    comparison = comparison.sort_values(["Mois_No", "Region_Nom"])
+    comparison_figure = px.line(
+        comparison,
+        x="Mois_No",
+        y="Nuitees",
+        color="Region_Nom",
+        markers=True,
+        category_orders={"Mois_No": list(range(1, 13))},
+        labels={
+            "Mois_No": "Mois",
+            "Nuitees": "Nuitées",
+            "Region_Nom": "Région",
+        },
+    )
+    comparison_figure.update_layout(
+        xaxis={"dtick": 1, "range": [1, 12]},
+        yaxis={"tickformat": ",.0f"},
+        hovermode="x unified",
+        legend_title_text="",
+    )
+    st.plotly_chart(comparison_figure, use_container_width=True)
+
+
 def render_placeholder(chapter: str) -> None:
     """Affiche un emplacement explicite pour les chapitres non implémentés."""
     st.title(chapter)
@@ -344,6 +467,8 @@ def main() -> None:
         render_overview(filtered_data)
     elif chapter == "Chapitre 2 : Profils de clientèle":
         render_profils(filtered_data)
+    elif chapter == "Chapitre 3 : Typologie & Saisonnalité":
+        render_typologie(filtered_data)
     else:
         render_placeholder(chapter)
 

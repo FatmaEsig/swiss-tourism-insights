@@ -27,6 +27,44 @@ REQUIRED_COLUMNS = {
     "Longitude",
 }
 
+MONTH_NAMES = [
+    "Janvier",
+    "Février",
+    "Mars",
+    "Avril",
+    "Mai",
+    "Juin",
+    "Juillet",
+    "Août",
+    "Septembre",
+    "Octobre",
+    "Novembre",
+    "Décembre",
+]
+
+# Coordonnées indicatives des centres des régions touristiques OFS.
+# Elles servent uniquement au repérage spatial, pas à représenter une frontière.
+REGION_COORDINATES = {
+    "Suisse": (46.80, 8.23),
+    "Grisons": (46.70, 9.60),
+    "Suisse orientale": (47.35, 9.25),
+    "Région zurichoise": (47.38, 8.54),
+    "R�gion zurichoise": (47.38, 8.54),
+    "Lucerne / Lac des Quatre Cantons": (46.98, 8.25),
+    "Région Bâloise": (47.56, 7.59),
+    "R�gion B�loise": (47.56, 7.59),
+    "Région Berne": (46.95, 7.45),
+    "Jura & Trois-Lacs": (47.10, 7.05),
+    "Vaud": (46.62, 6.63),
+    "Genève": (46.20, 6.14),
+    "Gen�ve": (46.20, 6.14),
+    "Valais": (46.25, 7.55),
+    "Tessin": (46.15, 8.95),
+    "Fribourg": (46.80, 7.15),
+    "Région Argovie et Soleure": (47.40, 8.05),
+    "R�gion Argovie et Soleure": (47.40, 8.05),
+}
+
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
@@ -111,40 +149,101 @@ def filter_data(
     ].copy()
 
 
+def annual_rows(data: pd.DataFrame) -> pd.DataFrame:
+    """Retourne une ligne annuelle par année et région sans double comptage."""
+    annual = data[data["Mois_No"] == 0].copy()
+    if not annual.empty:
+        return annual
+    return data[data["Mois_No"].between(1, 12)].copy()
+
+
+def format_number(value: float) -> str:
+    """Formate un nombre avec des espaces, lisibles en français."""
+    return f"{value:,.0f}".replace(",", " ")
+
+
+def filter_context(data: pd.DataFrame) -> str:
+    """Construit un résumé court des filtres visibles dans les titres."""
+    years = sorted(data["Annee"].dropna().astype(int).unique().tolist())
+    regions = data["Region_Nom"].dropna().nunique()
+    if not years:
+        return "aucune donnée"
+    period = str(years[0]) if len(years) == 1 else f"{years[0]}–{years[-1]}"
+    return f"{period} · {regions} région(s) sélectionnée(s)"
+
+
+def render_source_note() -> None:
+    """Explique la source OFS et les transformations réalisées dans le projet."""
+    with st.expander("Source des données et méthode", expanded=False):
+        st.markdown(
+            """
+            **Source :** Office fédéral de la statistique (OFS), statistiques de
+            l'hôtellerie suisse. Les fichiers bruts sont
+            `data/raw/OFS_offre_demande.xlsx` et `data/raw/OFS_provenance.xlsx`.
+
+            **Préparation réalisée dans ce projet :** les en-têtes Excel complexes
+            ont été aplatis, les valeurs fusionnées ont été propagées, puis les
+            deux fichiers ont été fusionnés sur l'année, le mois et la région.
+            Le résultat est `data/processed/master_data.csv`.
+
+            **Précaution :** une *nuitée* correspond à une nuit passée dans un
+            établissement, tandis qu'une *arrivée* correspond à l'arrivée d'un
+            client. Le taux d'occupation est exprimé en pourcentage. Les
+            coordonnées de la carte sont des points indicatifs des régions.
+            """
+        )
+
+
 def render_overview(data: pd.DataFrame) -> None:
     """Affiche le chapitre 1 : carte spatiale et évolution temporelle."""
-    st.title("Chapitre 1 : Vue d'ensemble de la fréquentation touristique suisse")
+    st.title(
+        "Chapitre 1 : Vue d'ensemble de la fréquentation touristique suisse "
+        f"({filter_context(data)})"
+    )
 
     if data.empty:
         st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
         return
 
-    total_nights = data["Nuitees"].sum()
-    average_occupancy = data["Taux_occupation_chambres_pct"].mean()
+    annual = annual_rows(data)
+    total_nights = annual["Nuitees"].sum()
+    average_occupancy = annual["Taux_occupation_chambres_pct"].mean()
     metric_columns = st.columns(2)
-    metric_columns[0].metric("Nuitées", f"{total_nights:,.0f}".replace(",", " "))
+    metric_columns[0].metric(
+        "Nuitées totales sur la période",
+        format_number(total_nights),
+        help="Nombre total de nuits passées dans les hébergements, sur la période filtrée.",
+    )
     metric_columns[1].metric(
         "Taux moyen d'occupation des chambres",
         f"{average_occupancy:.1f} %",
+        help="Part moyenne des chambres disponibles qui ont été occupées.",
+    )
+    st.caption(
+        "Une nuitée correspond à une nuit passée dans un hébergement. "
+        "Le taux d'occupation indique la part des chambres utilisées."
     )
 
-    st.subheader("Fréquentation par région")
+    st.subheader("Repérage spatial des nuitées")
+    st.markdown(
+        "Chaque cercle représente une région sélectionnée : sa **taille** indique "
+        "le volume de nuitées et sa **couleur** le taux moyen d'occupation. "
+        "Les points sont des centres indicatifs, et non les frontières régionales."
+    )
     map_data = (
-        data.dropna(subset=["Latitude", "Longitude"])
-        .groupby("Region_Nom", as_index=False)
+        annual.groupby("Region_Nom", as_index=False)
         .agg(
             Nuitees=("Nuitees", "sum"),
             Taux_occupation_chambres_pct=("Taux_occupation_chambres_pct", "mean"),
-            Latitude=("Latitude", "first"),
-            Longitude=("Longitude", "first"),
         )
     )
+    map_data[["Latitude", "Longitude"]] = map_data["Region_Nom"].map(
+        REGION_COORDINATES
+    ).apply(pd.Series)
+    map_data = map_data.dropna(subset=["Latitude", "Longitude"])
 
     if map_data.empty:
-        st.info(
-            "La carte ne peut pas être affichée : aucune région sélectionnée "
-            "ne possède de coordonnées géographiques."
-        )
+        st.info("Aucune région ne peut être positionnée sur la carte.")
     else:
         map_figure = px.scatter_map(
             map_data,
@@ -160,7 +259,7 @@ def render_overview(data: pd.DataFrame) -> None:
                 "Longitude": False,
             },
             color_continuous_scale="Viridis",
-            size_max=45,
+            size_max=38,
             zoom=6.5,
             center={"lat": 46.8, "lon": 8.2},
             map_style="carto-positron",
@@ -170,64 +269,95 @@ def render_overview(data: pd.DataFrame) -> None:
             },
         )
         map_figure.update_layout(
+            height=500,
             margin={"r": 0, "t": 0, "l": 0, "b": 0},
             coloraxis_colorbar_title="Occupation (%)",
         )
         st.plotly_chart(map_figure, use_container_width=True)
+        st.caption(
+            f"{len(map_data)} région(s) affichée(s). La carte sert au repérage "
+            "géographique ; les positions sont indicatives."
+        )
 
-    st.subheader("Évolution temporelle des nuitées")
+    st.subheader("Évolution des nuitées")
+    st.markdown(
+        "La vue nationale est proposée par défaut pour éviter la superposition de "
+        "14 courbes. Le mode comparaison est limité à quatre régions."
+    )
     monthly_data = data[data["Mois_No"].between(1, 12)].copy()
     if monthly_data.empty:
-        yearly_data = (
-            data.groupby(["Annee", "Region_Nom"], as_index=False)["Nuitees"]
-            .sum()
-            .assign(Temps=lambda frame: pd.to_datetime(frame["Annee"], format="%Y"))
+        st.info("Aucune donnée mensuelle disponible pour l'évolution temporelle.")
+        return
+    chart_mode = st.radio(
+        "Niveau de lecture",
+        ["Total des régions sélectionnées", "Comparer des régions"],
+        horizontal=True,
+    )
+    if chart_mode == "Comparer des régions":
+        available_regions = sorted(monthly_data["Region_Nom"].unique().tolist())
+        comparison_regions = st.multiselect(
+            "Régions à comparer (4 maximum)",
+            available_regions,
+            default=available_regions[:4],
         )
-        x_column = "Temps"
-        timeline_data = yearly_data
+        if not comparison_regions:
+            st.info("Sélectionnez au moins une région pour afficher la courbe.")
+            return
+        if len(comparison_regions) > 4:
+            st.warning("Seules les quatre premières régions sont affichées.")
+            comparison_regions = comparison_regions[:4]
+        timeline_data = (
+            monthly_data[monthly_data["Region_Nom"].isin(comparison_regions)]
+            .groupby(["Annee", "Mois_No", "Region_Nom"], as_index=False)["Nuitees"]
+            .sum()
+        )
+        color_column = "Region_Nom"
     else:
         timeline_data = (
-            monthly_data.groupby(["Annee", "Mois_No", "Region_Nom"], as_index=False)[
-                "Nuitees"
-            ]
+            monthly_data.groupby(["Annee", "Mois_No"], as_index=False)["Nuitees"]
             .sum()
-            .assign(
-                Temps=lambda frame: pd.to_datetime(
-                    frame["Annee"].astype(str)
-                    + "-"
-                    + frame["Mois_No"].astype(str)
-                    + "-01",
-                    format="%Y-%m-%d",
-                )
-            )
         )
-        x_column = "Temps"
+        color_column = None
+
+    timeline_data["Temps"] = pd.to_datetime(
+        timeline_data["Annee"].astype(str)
+        + "-"
+        + timeline_data["Mois_No"].astype(str)
+        + "-01",
+        format="%Y-%m-%d",
+    )
 
     timeline_figure = px.line(
-        timeline_data.sort_values(x_column),
-        x=x_column,
+        timeline_data.sort_values("Temps"),
+        x="Temps",
         y="Nuitees",
-        color="Region_Nom" if timeline_data["Region_Nom"].nunique() > 1 else None,
-        markers=True,
-        labels={"Temps": "Période", "Nuitees": "Nuitées", "Region_Nom": "Région"},
+        color=color_column,
+        labels={"Temps": "Mois", "Nuitees": "Nuitées", "Region_Nom": "Région"},
+        color_discrete_sequence=px.colors.qualitative.Safe,
     )
     timeline_figure.update_layout(
+        height=520,
         hovermode="x unified",
-        yaxis={"tickformat": ",.0f", "title": "Nuitées"},
-        legend_title_text="Région",
+        yaxis={"tickformat": ",.0f", "title": "Nuitées totales"},
+        legend_title_text="",
     )
     st.plotly_chart(timeline_figure, use_container_width=True)
 
 
 def render_profils(data: pd.DataFrame) -> None:
     """Affiche les indicateurs de dépendance internationale et de séjour."""
-    st.title("Chapitre 2 : Analyser la demande et les profils de clientèle")
+    st.title(
+        "Chapitre 2 : Analyser la demande et les profils de clientèle "
+        f"({filter_context(data)})"
+    )
 
     if data.empty:
         st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
         return
 
-    profils = data[["Region_Nom", "Nuitees", "Suisse_Nuitées", "Arrivees"]].copy()
+    profils = annual_rows(data)[
+        ["Region_Nom", "Nuitees", "Suisse_Nuitées", "Arrivees"]
+    ].copy()
     profils["Etranger_Nuitees"] = (
         profils["Nuitees"] - profils["Suisse_Nuitées"]
     )
@@ -325,7 +455,10 @@ def render_profils(data: pd.DataFrame) -> None:
 
 def render_typologie(data: pd.DataFrame) -> None:
     """Analyse la répartition mensuelle des nuitées par région."""
-    st.title("Chapitre 3 : Typologie et analyse de la saisonnalité")
+    st.title(
+        "Chapitre 3 : Typologie et analyse de la saisonnalité "
+        f"({filter_context(data)})"
+    )
 
     if data.empty:
         st.info("Aucune donnée ne correspond aux filtres sélectionnés.")
@@ -448,7 +581,10 @@ def render_typologie(data: pd.DataFrame) -> None:
 
 def render_simulation(data: pd.DataFrame) -> None:
     """Simule une hausse de fréquentation pendant les quatre mois les plus creux."""
-    st.title("Chapitre 4 : Outil de simulation (Hors-saison)")
+    st.title(
+        "Chapitre 4 : Outil de simulation (Hors-saison) "
+        f"({filter_context(data)})"
+    )
     st.markdown(
         "Simulez l'impact d'une politique de promotion touristique ciblée sur les "
         "mois dits 'creux' (basse saison) pour lisser la fréquentation annuelle."
@@ -606,6 +742,8 @@ def main() -> None:
         render_typologie(filtered_data)
     elif chapter == "Chapitre 4 : Outil de simulation":
         render_simulation(filtered_data)
+
+    render_source_note()
 
 
 if __name__ == "__main__":
